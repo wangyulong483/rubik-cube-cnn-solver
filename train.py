@@ -2,13 +2,13 @@
 # -*- coding: utf-8 -*-
 """标注 + 训练：给 3×3 的九个格子按颜色贴标签，训出 main.py 用的 cnn.pt。
 
-  1. 左边把四个绿点拖到魔方面的四个角上，角点会写进 config.json，main.py 共用；
+  1. 相机固定不动，config.json 里的四个角点就是屏幕上的绿框；把魔方摆进框里、让一面填满
+     就算对准，不用在画面上拖角点；
   2. 中间 9 格从第 1 格开始自动选中，按 w/y/r/o/b/g 给它贴标签，贴完自动跳到下一格，
      照 1→9 的顺序打完这一面；九格打完自动清空，转个面接着打；
   3. 每种颜色攒到三四十个格子后按 T 训练。屏幕上报验证准确率，权重写进 cnn.pt，
      main.py 下次启动读它，不用改任何阈值。
 """
-import json
 import random
 
 import cv2
@@ -16,30 +16,17 @@ import numpy as np
 import torch
 
 import ui
-from main import (CAMERA_INDEX, CAMERA_SIZE, CONFIG_PATH, MODEL_PATH, CubeNet,
-                  cells, load_config, to_batch, warp_face)
+from main import (CAMERA_INDEX, CAMERA_SIZE, MODEL_PATH, CubeNet, cells,
+                  load_config, to_batch, warp_face)
 
 KEYS = {ord("w"): 0, ord("y"): 1, ord("r"): 2, ord("o"): 3, ord("b"): 4, ord("g"): 5}
 DIGITS = {ord(str(i + 1)): i for i in range(9)}
 
 state = {"quad": None, "cell": 0, "labels": [None] * 9, "samples": [],
-         "accuracy": None, "view_w": 640, "drag": -1}
+         "accuracy": None}
 
 
 # ---------------------------------------------------------------- 标注
-
-def on_mouse(event, x, y, flags, _):
-    """在左侧画面上拖动最近的那个角点。"""
-    w = state["view_w"]
-    pts = [np.array([q[0] * w, q[1] * ui.VIEW_H]) for q in state["quad"]]
-    if event == cv2.EVENT_LBUTTONDOWN:
-        distances = [np.hypot(*(p - (x, y))) for p in pts]
-        state["drag"] = int(np.argmin(distances)) if min(distances) < 60 else -1
-    elif event == cv2.EVENT_MOUSEMOVE and state["drag"] >= 0 and flags & cv2.EVENT_FLAG_LBUTTON:
-        state["quad"][state["drag"]] = [min(max(x / w, 0.0), 1.0), min(max(y / ui.VIEW_H, 0.0), 1.0)]
-    elif event == cv2.EVENT_LBUTTONUP:
-        state["drag"] = -1
-
 
 def label_cell(color):
     """把当前格贴上颜色标签，顺便存一份样本，然后跳到下一格。"""
@@ -113,15 +100,13 @@ def train(samples):
 # ---------------------------------------------------------------- 主循环
 
 def main():
-    cfg = load_config()
-    state["quad"] = [list(point) for point in cfg["quad"]]
+    state["quad"] = load_config()["quad"]
 
     camera = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
     camera.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_SIZE[0])
     camera.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_SIZE[1])
 
     cv2.namedWindow(ui.TRAIN_WINDOW, cv2.WINDOW_AUTOSIZE)
-    cv2.setMouseCallback(ui.TRAIN_WINDOW, on_mouse)
 
     while True:
         ok, frame = camera.read()
@@ -130,7 +115,6 @@ def main():
         state["frame"] = frame
 
         view = ui.draw_camera(frame, state["quad"])
-        state["view_w"] = view.shape[1]
         canvas = np.full((ui.VIEW_H, view.shape[1] + ui.FACE + ui.STATS_W, 3), ui.BG, np.uint8)
         canvas[:, :view.shape[1]] = view
         canvas[:, view.shape[1]:view.shape[1] + ui.FACE] = ui.draw_warp(
@@ -147,9 +131,6 @@ def main():
         elif key in DIGITS:
             state["cell"] = DIGITS[key]
         elif key in (ord("t"), ord("T")) and state["samples"]:
-            CONFIG_PATH.write_text(json.dumps(
-                {"quad": [[round(x, 4), round(y, 4)] for x, y in state["quad"]]},
-                indent=2), encoding="utf-8")
             print(f"训练 {len(state['samples'])} 个样本 …")
             state["accuracy"] = train(state["samples"])
             print(f"验证准确率 {state['accuracy']:.1%}，已写入 {MODEL_PATH.name}")
